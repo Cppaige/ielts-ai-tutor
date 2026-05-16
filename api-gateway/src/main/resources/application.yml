@@ -1,0 +1,25 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+  ai:
+    openai:
+      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+      api-key: ${DEEPSEEK_API_KEY:changeme}
+      chat:
+        options:
+          model: deepseek-chat
+
+jwt:
+  secret: ${JWT_SECRET:changeme-secret-key-that-is-at-least-32-bytes}
+
+routing:
+  data-service: ${DATA_SERVICE_URL:http://localhost:8083}
+  writing-service: ${WRITING_SERVICE_URL:http://localhost:8081}
+  speaking-service: ${SPEAKING_SERVICE_URL:http://localhost:8082}
