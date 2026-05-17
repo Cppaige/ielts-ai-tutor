@@ -122,3 +122,9 @@ CREATE TABLE speaking_reports (
     detail JSON,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Grant privileges to ielts user
+GRANT ALL PRIVILEGES ON ielts_data.* TO 'ielts'@'%';
+GRANT ALL PRIVILEGES ON ielts_writing.* TO 'ielts'@'%';
+GRANT ALL PRIVILEGES ON ielts_speaking.* TO 'ielts'@'%';
+FLUSH PRIVILEGES;

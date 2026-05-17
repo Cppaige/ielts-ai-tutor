@@ -4,6 +4,8 @@ services:
     image: mysql:8.0
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
     ports:
       - "3306:3306"
     volumes:
@@ -80,13 +82,13 @@ services:
     ports:
       - "8083:8083"
     environment:
-      MYSQL_HOST: ${MYSQL_HOST}
-      MYSQL_PORT: ${MYSQL_PORT}
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
       MYSQL_USER: ${MYSQL_USER}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-      REDIS_HOST: ${REDIS_HOST}
-      REDIS_PORT: ${REDIS_PORT}
-      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       JWT_SECRET: ${JWT_SECRET}
     networks:
       - backend
@@ -105,18 +107,17 @@ services:
     ports:
       - "8081:8081"
     environment:
-      MYSQL_HOST: ${MYSQL_HOST}
-      MYSQL_PORT: ${MYSQL_PORT}
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
       MYSQL_USER: ${MYSQL_USER}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-      REDIS_HOST: ${REDIS_HOST}
-      REDIS_PORT: ${REDIS_PORT}
-      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
-      DATA_SERVICE_HOST: ${DATA_SERVICE_HOST}
-      DATA_SERVICE_PORT: ${DATA_SERVICE_PORT}
-      QDRANT_HOST: ${QDRANT_HOST}
-      QDRANT_PORT: ${QDRANT_PORT}
+      DATA_SERVICE_URL: http://data-service:8083
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
     networks:
       - backend
     depends_on:
@@ -136,16 +137,15 @@ services:
     ports:
       - "8082:8082"
     environment:
-      MYSQL_HOST: ${MYSQL_HOST}
-      MYSQL_PORT: ${MYSQL_PORT}
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
       MYSQL_USER: ${MYSQL_USER}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-      REDIS_HOST: ${REDIS_HOST}
-      REDIS_PORT: ${REDIS_PORT}
-      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
-      DATA_SERVICE_HOST: ${DATA_SERVICE_HOST}
-      DATA_SERVICE_PORT: ${DATA_SERVICE_PORT}
+      DATA_SERVICE_URL: http://data-service:8083
       ALIYUN_ACCESS_KEY_ID: ${ALIYUN_ACCESS_KEY_ID}
       ALIYUN_ACCESS_KEY_SECRET: ${ALIYUN_ACCESS_KEY_SECRET}
       ALIYUN_NLS_APP_KEY: ${ALIYUN_NLS_APP_KEY}
@@ -166,23 +166,23 @@ services:
     ports:
       - "8080:8080"
     environment:
-      REDIS_HOST: ${REDIS_HOST}
-      REDIS_PORT: ${REDIS_PORT}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
       JWT_SECRET: ${JWT_SECRET}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
-      DATA_SERVICE_HOST: ${DATA_SERVICE_HOST}
-      DATA_SERVICE_PORT: ${DATA_SERVICE_PORT}
-      WRITING_SERVICE_HOST: ${WRITING_SERVICE_HOST}
-      WRITING_SERVICE_PORT: ${WRITING_SERVICE_PORT}
-      SPEAKING_SERVICE_HOST: ${SPEAKING_SERVICE_HOST}
-      SPEAKING_SERVICE_PORT: ${SPEAKING_SERVICE_PORT}
+      DATA_SERVICE_URL: http://data-service:8083
+      WRITING_SERVICE_URL: http://writing-service:8081
+      SPEAKING_SERVICE_URL: http://speaking-service:8082
     networks:
       - frontend
       - backend
     depends_on:
-      - data-service
-      - writing-service
-      - speaking-service
+      data-service:
+        condition: service_started
+      writing-service:
+        condition: service_started
+      speaking-service:
+        condition: service_started
 
 networks:
   frontend:
