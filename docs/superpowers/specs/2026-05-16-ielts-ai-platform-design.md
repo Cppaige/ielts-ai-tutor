@@ -117,6 +117,7 @@ writing_exemplars (
   excerpt TEXT NOT NULL,
   examiner_comment TEXT NOT NULL,
   source VARCHAR(100),           -- 来源: Cambridge IELTS 17 Test 1
+  full_content TEXT NOT NULL,
   created_at TIMESTAMP
 )
 

@@ -18,18 +18,18 @@ CREATE TABLE users (
 
 CREATE TABLE writing_topics (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    task_type TINYINT NOT NULL,
+    task_type INT NOT NULL,
     title TEXT NOT NULL,
     chart_type VARCHAR(50),
     chart_description TEXT,
     category VARCHAR(100),
-    difficulty TINYINT,
+    difficulty INT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE speaking_topics (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    part TINYINT NOT NULL,
+    part INT NOT NULL,
     question TEXT NOT NULL,
     cue_card TEXT,
     follow_up_questions JSON,
@@ -51,15 +51,16 @@ CREATE TABLE practice_records (
 
 -- ielts_writing tables
 USE ielts_writing;
-
+DROP TABLE writing_exemplars;
 CREATE TABLE writing_exemplars (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     task_type INT NOT NULL,
     category VARCHAR(100),
     band_score DECIMAL(2,1),
     excerpt TEXT NOT NULL,
-    examiner_comment TEXT NOT NULL,
+    examiner_comment TEXT,
     source VARCHAR(100),
+    full_content TEXT NOT NULL ,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
