@@ -54,7 +54,7 @@ USE ielts_writing;
 
 CREATE TABLE writing_exemplars (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    task_type TINYINT NOT NULL,
+    task_type INT NOT NULL,
     category VARCHAR(100),
     band_score DECIMAL(2,1),
     excerpt TEXT NOT NULL,
@@ -67,7 +67,7 @@ CREATE TABLE writing_submissions (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     user_id BIGINT NOT NULL,
     topic_id BIGINT NOT NULL,
-    task_type TINYINT NOT NULL,
+    task_type INT NOT NULL,
     essay_text TEXT NOT NULL,
     chart_type VARCHAR(50),
     chart_description TEXT,
@@ -102,7 +102,7 @@ CREATE TABLE speaking_sessions (
 CREATE TABLE session_turns (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     session_id BIGINT NOT NULL,
-    part TINYINT NOT NULL,
+    part INT NOT NULL,
     turn_order INT NOT NULL,
     role ENUM('EXAMINER','CANDIDATE') NOT NULL,
     content TEXT NOT NULL,

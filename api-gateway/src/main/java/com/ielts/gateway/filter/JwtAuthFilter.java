@@ -36,6 +36,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         }
 
         String authHeader = request.getHeader("Authorization");
+        //logger.info("拿到的Header: " + authHeader);
         if (authHeader == null || !authHeader.startsWith("Bearer ")) {
             sendUnauthorized(response);
             return;
