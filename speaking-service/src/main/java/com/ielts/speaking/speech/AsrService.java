@@ -13,8 +13,7 @@ public class AsrService {
     }
 
     public String transcribe(byte[] audioData) {
-        // MVP placeholder: integrate with Aliyun NLS SDK
-        // Real implementation will use SpeechRecognizer from nls-sdk-tts
-        throw new UnsupportedOperationException("ASR integration pending - use mock in tests");
+        // MVP placeholder: returns empty string until Aliyun NLS SDK is integrated
+        return "";
     }
 }

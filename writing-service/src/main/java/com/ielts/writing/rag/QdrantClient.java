@@ -29,6 +29,10 @@ public class QdrantClient {
     }
 
     public List<SearchResult> search(List<Float> queryVector, int taskType, String category, int topK) {
+        if (queryVector == null || queryVector.isEmpty()) {
+            return List.of();
+        }
+
         Map<String, Object> filter = Map.of(
                 "must", List.of(
                         Map.of("key", "task_type", "match", Map.of("value", taskType)),

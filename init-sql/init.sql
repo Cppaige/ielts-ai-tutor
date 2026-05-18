@@ -123,7 +123,8 @@ CREATE TABLE speaking_reports (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Grant privileges to ielts user
+-- Create ielts user and grant privileges
+CREATE USER IF NOT EXISTS 'ielts'@'%' IDENTIFIED BY 'ielts123';
 GRANT ALL PRIVILEGES ON ielts_data.* TO 'ielts'@'%';
 GRANT ALL PRIVILEGES ON ielts_writing.* TO 'ielts'@'%';
 GRANT ALL PRIVILEGES ON ielts_speaking.* TO 'ielts'@'%';

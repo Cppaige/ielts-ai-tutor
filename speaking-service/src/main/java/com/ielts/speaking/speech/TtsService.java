@@ -13,8 +13,7 @@ public class TtsService {
     }
 
     public String synthesize(String text) {
-        // MVP placeholder: integrate with Aliyun NLS SDK
-        // Real implementation will use SpeechSynthesizer, save to file, return URL
-        throw new UnsupportedOperationException("TTS integration pending - use mock in tests");
+        // MVP placeholder: returns empty string until Aliyun NLS SDK is integrated
+        return "";
     }
 }

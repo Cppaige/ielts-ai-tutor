@@ -1,5 +1,9 @@
 server:
   port: 8080
+  compression:
+    enabled: false
+  tomcat:
+    max-keep-alive-requests: -1
 
 spring:
   application:
@@ -14,7 +18,7 @@ spring:
       api-key: ${DEEPSEEK_API_KEY:changeme}
       chat:
         options:
-          model: deepseek-chat
+          model: deepseek-v4-flash
 
 jwt:
   secret: ${JWT_SECRET:changeme-secret-key-that-is-at-least-32-bytes}
