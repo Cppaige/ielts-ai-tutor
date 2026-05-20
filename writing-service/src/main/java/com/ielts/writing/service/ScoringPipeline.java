@@ -37,7 +37,7 @@ public class ScoringPipeline {
         this.objectMapper = objectMapper;
     }
 
-    public void execute(Long submissionId, List<Float> essayEmbedding, String category) {
+    public void execute(Long submissionId, List<Float> essayEmbedding) {
         WritingSubmission submission = repository.findById(submissionId).orElseThrow();
         submission.setStatus(WritingSubmission.SubmissionStatus.SCORING);
         repository.save(submission);
@@ -48,7 +48,7 @@ public class ScoringPipeline {
                     () -> lrGraAgent.analyze(submission.getEssayText()));
 
             CompletableFuture<TrCcResult> trCcFuture = CompletableFuture.supplyAsync(
-                    () -> trCcAgent.analyze(submission.getEssayText(), essayEmbedding, submission.getTaskType(), category));
+                    () -> trCcAgent.analyze(submission.getEssayText(), essayEmbedding, submission.getTaskType()));
 
             CompletableFuture.allOf(lrGraFuture, trCcFuture).join();
 

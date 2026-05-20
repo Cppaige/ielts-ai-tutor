@@ -28,15 +28,14 @@ public class QdrantClient {
         this.objectMapper = objectMapper;
     }
 
-    public List<SearchResult> search(List<Float> queryVector, int taskType, String category, int topK) {
+    public List<SearchResult> search(List<Float> queryVector, int taskType, int topK) {
         if (queryVector == null || queryVector.isEmpty()) {
             return List.of();
         }
 
         Map<String, Object> filter = Map.of(
                 "must", List.of(
-                        Map.of("key", "task_type", "match", Map.of("value", taskType)),
-                        Map.of("key", "category", "match", Map.of("value", category))
+                        Map.of("key", "task_type", "match", Map.of("value", taskType))
                 )
         );
 
