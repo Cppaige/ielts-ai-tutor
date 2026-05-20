@@ -43,6 +43,9 @@ spring:
 data-service:
   base-url: ${DATA_SERVICE_URL:http://localhost:8083}
 
+dashscope:
+  api-key: ${DASHSCOPE_API_KEY:}
+
 qdrant:
   host: ${QDRANT_HOST:localhost}
   port: ${QDRANT_PORT:6333}

@@ -41,8 +41,8 @@ public class TrCcAgent {
         this.qdrantClient = qdrantClient;
     }
 
-    public TrCcResult analyze(String essayText, List<Float> essayEmbedding, int taskType, String category) {
-        List<QdrantClient.SearchResult> exemplars = qdrantClient.search(essayEmbedding, taskType, category, 3);
+    public TrCcResult analyze(String essayText, List<Float> essayEmbedding, int taskType) {
+        List<QdrantClient.SearchResult> exemplars = qdrantClient.search(essayEmbedding, taskType, 3);
         String exemplarContext = buildExemplarContext(exemplars);
         String userMessage = exemplarContext + "\n\n<essay_text>" + essayText + "</essay_text>";
         return callWithRetry(userMessage);

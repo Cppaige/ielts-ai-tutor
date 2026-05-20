@@ -22,6 +22,6 @@ public class ScoringRequestConsumer {
     @KafkaListener(topics = "writing.scoring.request", groupId = "writing-service")
     public void consume(ScoringRequestMessage message) {
         List<Float> embedding = dataServiceClient.getEmbedding(message.essayText());
-        scoringPipeline.execute(message.submissionId(), embedding, "general");
+        scoringPipeline.execute(message.submissionId(), embedding);
     }
 }
