@@ -57,11 +57,11 @@ class ScoringPipelineTest {
         var masterResult = new MasterResult(new BigDecimal("7.0"), new BigDecimal("7.0"), new BigDecimal("7.0"), new BigDecimal("7.0"), new BigDecimal("6.5"), "feedback", "polished");
 
         when(lrGraAgent.analyze(anyString())).thenReturn(lrGraResult);
-        when(trCcAgent.analyze(anyString(), any(), anyInt(), any())).thenReturn(trCcResult);
+        when(trCcAgent.analyze(anyString(), any(), anyInt())).thenReturn(trCcResult);
         when(masterAgent.summarize(anyString(), anyString(), anyString())).thenReturn(masterResult);
         when(repository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        pipeline.execute(1L, List.of(0.1f, 0.2f), "education");
+        pipeline.execute(1L, List.of(0.1f, 0.2f));
 
         verify(progressNotifier).notify(1L, "SCORING_STARTED");
         verify(progressNotifier).notify(1L, "LR_GRA_DONE");
@@ -82,7 +82,7 @@ class ScoringPipelineTest {
         when(lrGraAgent.analyze(anyString())).thenThrow(new RuntimeException("LLM error"));
         when(repository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        pipeline.execute(2L, List.of(0.1f), "education");
+        pipeline.execute(2L, List.of(0.1f));
 
         verify(progressNotifier).notify(2L, "FAILED");
         assertEquals(WritingSubmission.SubmissionStatus.FAILED, submission.getStatus());
