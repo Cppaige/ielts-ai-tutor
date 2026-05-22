@@ -13,7 +13,7 @@ client = QdrantClient("http://localhost:6333")
 collection_name = "writing_exemplars"
 
 print("正在读取 JSON 文件...")
-with open("ielts_data_export.json", "r", encoding="utf-8") as f:
+with open("qdrant/ielts_data_export.json", "r", encoding="utf-8") as f:
     records = json.load(f)
 
 if not records:
@@ -26,17 +26,17 @@ print("正在调用阿里云 API 生成向量，请稍候...")
 # 我们提取 essayBody（雅思范文正文）作为用来被检索的核心向量内容
 texts = [r["essayBody"] for r in records]
 
-# 阿里云 API 建议分批请求（这里设置为每次处理 20 条）
-batch_size = 20
+# 阿里云 API 建议分批请求（这里设置为每次处理 10 条）
+batch_size = 10
 all_embeddings = []
 
 for i in range(0, len(texts), batch_size):
     batch_texts = texts[i:i+batch_size]
     print(f"正在请求 API: 处理第 {i+1} 到 {min(i+batch_size, len(texts))} 条数据...")
 
-    # 调用阿里云 text-embedding-v2 模型
+    # 调用阿里云 text-embedding-v4 模型
     resp = TextEmbedding.call(
-        model=TextEmbedding.Models.text_embedding_v2,
+        model="text-embedding-v4",
         input=batch_texts
     )
 
@@ -57,7 +57,7 @@ print(f"✅ 向量生成完毕！真实的向量维度为: {vector_size}")
 print(f"正在清空旧数据，并按 {vector_size} 维重建集合 {collection_name}...")
 client.recreate_collection(
     collection_name=collection_name,
-    vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+    vectors_config=VectorParams(size=vector_size, distance=Distance.DOT),
 )
 
 # --- 4. 组装全新 Payload 并灌入数据 ---

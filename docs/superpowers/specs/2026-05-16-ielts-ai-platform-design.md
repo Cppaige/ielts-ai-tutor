@@ -1,511 +1,221 @@
-# IELTS AI 练习平台 — 架构设计文档
+# IELTS AI 练习平台 — 架构设计文档 v1.1
 
-## 项目概述
-
-基于 AI 的雅思备考平台，包含写作评分系统（多 Agent 流水线）、口语对练系统（状态机考官）、题库与用户系统。采用多容器微服务架构，Java 21 + Spring Boot 3.x + Spring AI + DeepSeek。
+> **版本说明**：v1.0 为初始设计稿；v1.1 基于第一版实际落地情况更新，记录了实现偏差、已修复的关键 Bug 及已知技术债。
 
 ---
 
-## 第一节：服务架构与通信拓扑
+## 第一节：系统架构演进
 
-### 服务清单
+### 1.1 服务清单与端口
 
-| 服务 | 职责 |
-|------|------|
-| api-gateway (8080) | JWT 校验、路由转发（WebClient）、WebSocket 连接管理、Guardrail 意图分类（deepseek-v4-flash） |
-| data-service (8083) | 用户注册/登录/JWT 签发、题库 CRUD、练习记录索引摘要、Redis Cache-Aside |
-| writing-service (8081) | 作文提交 → Kafka 入队 → 三 Agent 流水线评分 → Redis Pub/Sub 进度 → Kafka 摘要 |
-| speaking-service (8082) | 口语会话状态机（Redis + Lua）、ASR/LLM/TTS 编排、Kafka 报告生成 |
-
-### 服务间通信
-
-| 路径 | 方式 | 用途 |
+| 服务 | 端口 | 职责 |
 |------|------|------|
-| gateway → 各服务 | REST (WebClient) | 请求转发 |
-| writing/speaking → data-service | REST | 获取题库数据（Cache-Aside 在调用方） |
-| writing-service → gateway | Redis Pub/Sub | 评分进度通知 |
-| writing/speaking → data-service | Kafka | 评分/报告摘要推送 |
+| `api-gateway` | 8080 | JWT 校验（Servlet Filter）、反向代理（RestClient）、Guardrail 意图分类（DeepSeek）、WebSocket 评分进度推送 |
+| `data-service` | 8083 | 用户注册/登录/JWT 签发、题库 CRUD、练习记录索引（Kafka 消费写入）、Redis Cache-Aside |
+| `writing-service` | 8081 | 作文提交 → Kafka 入队 → 三 Agent 流水线评分 → Redis Pub/Sub 进度通知 → Kafka 摘要 |
+| `speaking-service` | 8082 | 口语会话状态机（Redis Hash + Lua）、ASR/LLM/TTS 编排、Kafka 报告生成 |
 
-### 架构图
+### 1.2 服务间通信拓扑
+
+| 路径 | 方式 | 实现说明 |
+|------|------|----------|
+| 前端 → gateway | HTTP REST + WebSocket | 唯一对外入口，端口 8080 |
+| gateway → 各下游服务 | HTTP（Spring `RestClient`，同步阻塞） | **实现偏差**：设计稿用 WebClient（响应式），实际落地用 RestClient（Servlet 栈） |
+| writing/speaking → data-service | HTTP REST（WebClient，响应式） | 题库数据获取，调用方侧 Cache-Aside |
+| writing-service → gateway | Redis Pub/Sub | 评分进度通知，channel: `scoring.progress:{submissionId}` |
+| writing/speaking → data-service | Kafka | 评分/报告摘要异步推送 |
+
+### 1.3 架构图（当前实现）
 
 ```
-┌─────────────┐
-│   Frontend  │
-└──────┬──────┘
-       │ HTTP + WebSocket
-┌──────▼──────┐
-│ api-gateway │
-└──┬───┬───┬──┘
-   │   │   │  REST (内部)
-   ▼   ▼   ▼
-┌─────┐ ┌─────────┐ ┌─────────────┐
-│data │ │writing  │ │speaking     │
-│svc  │ │svc      │ │svc          │
-└──┬──┘ └────┬────┘ └──────┬──────┘
-   │         │              │
-   ▼         ▼              ▼
- MySQL    MySQL           MySQL
- (共享 Redis 集群: 缓存 + Pub/Sub + 状态机)
+┌─────────────────────────────────────────────────────┐
+│                      Frontend                        │
+│                  (Vite + React, :5173)               │
+└──────────────────────┬──────────────────────────────┘
+                       │ HTTP + WebSocket
+                       ▼
+┌─────────────────────────────────────────────────────┐
+│                   api-gateway (:8080)                │
+│  Filter Chain: JwtAuthFilter(Order=1)                │
+│               → GuardrailFilter(Order=2)             │
+│               → ProxyController (RestClient)         │
+│  WebSocket: /ws/scoring/{submissionId}               │
+│             ← Redis Pub/Sub subscriber               │
+└──────────┬──────────────┬──────────────┬────────────┘
+           │ REST          │ REST          │ REST
+           ▼               ▼               ▼
+  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+  │ data-service │ │writing-service│ │speaking-svc  │
+  │    (:8083)   │ │   (:8081)    │ │   (:8082)    │
+  └──────┬───────┘ └──────┬───────┘ └──────┬───────┘
+         │                │                 │
+         ▼                ▼                 ▼
+      MySQL            MySQL             MySQL
+    (ielts_data)   (ielts_writing)   (ielts_speaking)
+
+共享基础设施（Docker backend 网络）:
+  Redis  ← Cache-Aside + Pub/Sub + 状态机 Hash
+  Kafka  ← 评分任务队列 + 摘要同步
+  Qdrant ← 范文向量检索（writing-service 专用）
 ```
+
+### 1.4 路由规则（实际实现）
+
+gateway 同时支持带 `/api` 前缀和不带前缀两套路径，`ProxyController` 在转发前统一剥离 `/api` 前缀：
+
+| 外部路径 | 转发目标 |
+|----------|----------|
+| `/auth/**`, `/api/auth/**` | data-service:8083 |
+| `/data/**`, `/api/data/**` | data-service:8083 |
+| `/writing/**`, `/api/writing/**` | writing-service:8081 |
+| `/speaking/**`, `/api/speaking/**` | speaking-service:8082 |
+
+JWT 白名单：`/auth/login`, `/auth/register`, `/api/auth/login`, `/api/auth/register`，以及所有 `OPTIONS` 预检请求无条件放行。
 
 ---
 
-## 第二节：数据库 Schema 设计
+## 第二节：核心技术规格
 
-每个服务独立 MySQL 数据库，跨服务引用通过 ID 关联（不用外键）。
+### 2.1 JWT 鉴权
 
-### data-service（ielts_data）
+- data-service 签发，gateway 校验，共享密钥（`JWT_SECRET` 环境变量，≥32 字节）
+- Payload：`{userId, email, exp, iat}`，Access Token TTL 2 小时
+- gateway 通过 `HttpServletRequestWrapper` 注入 `X-User-Id` header，下游服务直接读取，不重复校验
+- 内部服务间信任 Docker 网络隔离，不做 mTLS
 
-```sql
--- 用户表
-users (
-  id BIGINT PK AUTO_INCREMENT,
-  email VARCHAR(255) UNIQUE NOT NULL,
-  password_hash VARCHAR(255) NOT NULL,
-  nickname VARCHAR(100),
-  target_band DECIMAL(2,1),
-  created_at TIMESTAMP,
-  updated_at TIMESTAMP
-)
+### 2.2 Guardrail 意图分类
 
--- 写作题库
-writing_topics (
-  id BIGINT PK AUTO_INCREMENT,
-  task_type TINYINT NOT NULL,       -- 1=Task1, 2=Task2
-  title TEXT NOT NULL,
-  chart_type VARCHAR(50),           -- Task1: bar/line/pie/table/map/process
-  chart_description TEXT,           -- Task1: 图表结构化描述
-  category VARCHAR(100),            -- education, technology...
-  difficulty TINYINT,
-  created_at TIMESTAMP
-)
+**触发条件**：仅对 UGC 写入路径（`POST /writing/submit`, `POST /api/writing/submit`）
 
--- 口语题库
-speaking_topics (
-  id BIGINT PK AUTO_INCREMENT,
-  part TINYINT NOT NULL,            -- 1/2/3
-  question TEXT NOT NULL,
-  cue_card TEXT,                    -- Part2 话题卡内容
-  follow_up_questions JSON,         -- Part3 预设追问
-  category VARCHAR(100),
-  season VARCHAR(20),               -- 考季: 2024-Q1
-  created_at TIMESTAMP
-)
+**实现**：`GuardrailFilter`（Order=2，在 JWT 校验之后）
 
--- 练习记录索引（从 Kafka 消费写入）
-practice_records (
-  id BIGINT PK AUTO_INCREMENT,
-  user_id BIGINT NOT NULL,
-  type ENUM('WRITING','SPEAKING') NOT NULL,
-  topic_id BIGINT NOT NULL,
-  service_record_id BIGINT NOT NULL,
-  overall_band DECIMAL(2,1),
-  created_at TIMESTAMP,
-  INDEX idx_user_type (user_id, type, created_at DESC)
-)
-```
+- 读取请求 body → 调 DeepSeek（`deepseek-v4-flash`）分类 → 判断 `OFF_TOPIC` → 返回 400
+- 分类器异常时 **fail open**（放行），避免误伤正常用户
+- body 读取后用 `CachedBodyRequestWrapper` 重新包装，保证下游 Controller 仍可读取
 
-### writing-service（ielts_writing）
+**口语侧 Guardrail**：`SessionService.isAbnormalContent()` 在 speaking-service 内部对候选人文本做二次分类（`NORMAL`/`ABNORMAL`），空文本直接放行。
 
-```sql
--- 范文表（前端展示 + Qdrant 关联）
-writing_exemplars (
-  id BIGINT PK AUTO_INCREMENT,
-  task_type TINYINT NOT NULL,
-  category VARCHAR(100),
-  band_score DECIMAL(2,1),
-  excerpt TEXT NOT NULL,
-  examiner_comment TEXT NOT NULL,
-  source VARCHAR(100),           -- 来源: Cambridge IELTS 17 Test 1
-  full_content TEXT NOT NULL,
-  created_at TIMESTAMP
-)
-
-writing_submissions (
-  id BIGINT PK AUTO_INCREMENT,
-  user_id BIGINT NOT NULL,
-  topic_id BIGINT NOT NULL,
-  task_type TINYINT NOT NULL,
-  essay_text TEXT NOT NULL,
-  chart_type VARCHAR(50),
-  chart_description TEXT,
-  status ENUM('PENDING','SCORING','COMPLETED','FAILED') DEFAULT 'PENDING',
-  tr_score DECIMAL(2,1),
-  cc_score DECIMAL(2,1),
-  lr_score DECIMAL(2,1),
-  gra_score DECIMAL(2,1),
-  overall_band DECIMAL(2,1),
-  lr_gra_detail JSON,
-  tr_cc_detail JSON,
-  master_feedback JSON,
-  created_at TIMESTAMP,
-  scored_at TIMESTAMP,
-  INDEX idx_user (user_id, created_at DESC)
-)
-```
-
-### speaking-service（ielts_speaking）
-
-```sql
-speaking_sessions (
-  id BIGINT PK AUTO_INCREMENT,
-  user_id BIGINT NOT NULL,
-  topic_id BIGINT NOT NULL,
-  examiner_persona ENUM('ENCOURAGING','STRICT') DEFAULT 'ENCOURAGING',
-  status ENUM('IN_PROGRESS','COMPLETED','ABANDONED') DEFAULT 'IN_PROGRESS',
-  started_at TIMESTAMP,
-  ended_at TIMESTAMP,
-  INDEX idx_user (user_id, started_at DESC)
-)
-
-session_turns (
-  id BIGINT PK AUTO_INCREMENT,
-  session_id BIGINT NOT NULL,
-  part TINYINT NOT NULL,
-  turn_order INT NOT NULL,
-  role ENUM('EXAMINER','CANDIDATE') NOT NULL,
-  content TEXT NOT NULL,
-  audio_url VARCHAR(500),
-  created_at TIMESTAMP,
-  INDEX idx_session (session_id, turn_order)
-)
-
-speaking_reports (
-  id BIGINT PK AUTO_INCREMENT,
-  session_id BIGINT UNIQUE NOT NULL,
-  fluency_score DECIMAL(2,1),
-  lexical_score DECIMAL(2,1),
-  grammar_score DECIMAL(2,1),
-  pronunciation_score DECIMAL(2,1),
-  overall_band DECIMAL(2,1),
-  detail JSON,
-  created_at TIMESTAMP
-)
-```
-
----
-
-## 第三节：Kafka 消息设计
-
-### Topic 列表
-
-| Topic | 生产者 | 消费者 | Partition | 用途 |
-|-------|--------|--------|-----------|------|
-| `writing.scoring.request` | writing-service | writing-service | 3 | 写作评分任务队列（自产自消） |
-| `writing.scoring.result` | writing-service | data-service | 3 | 评分摘要同步 |
-| `speaking.report.request` | speaking-service | speaking-service | 3 | 口语报告生成任务队列（自产自消） |
-| `speaking.session.result` | speaking-service | data-service | 3 | 报告摘要同步 |
-
-### 消息体格式（JSON + 版本号）
-
-**writing.scoring.request:**
-```json
-{
-  "version": 1,
-  "submissionId": 12345,
-  "userId": 1001,
-  "topicId": 42,
-  "taskType": 2,
-  "essayText": "...",
-  "chartType": null,
-  "chartDescription": null,
-  "requestedAt": "2026-05-16T10:30:00Z"
-}
-```
-
-**writing.scoring.result:**
-```json
-{
-  "version": 1,
-  "submissionId": 12345,
-  "userId": 1001,
-  "topicId": 42,
-  "taskType": 2,
-  "overallBand": 7.0,
-  "trScore": 7.0,
-  "ccScore": 7.0,
-  "lrScore": 7.0,
-  "graScore": 6.5,
-  "scoredAt": "2026-05-16T10:31:15Z"
-}
-```
-
-**speaking.report.request:**
-```json
-{
-  "version": 1,
-  "sessionId": 5678,
-  "userId": 1001,
-  "topicId": 88,
-  "requestedAt": "2026-05-16T11:00:00Z"
-}
-```
-
-**speaking.session.result:**
-```json
-{
-  "version": 1,
-  "sessionId": 5678,
-  "userId": 1001,
-  "topicId": 88,
-  "overallBand": 6.5,
-  "fluencyScore": 6.5,
-  "lexicalScore": 7.0,
-  "grammarScore": 6.5,
-  "pronunciationScore": 6.0,
-  "completedAt": "2026-05-16T11:01:30Z"
-}
-```
-
-### 消费失败处理
-
-- 重试 3 次（Spring Kafka DefaultErrorHandler，backoff 1s/3s/10s）
-- 3 次失败后发送到 DLT（如 `writing.scoring.request.DLT`）
-- MVP 阶段 DLT 仅日志告警
-
-### Partition Key
-
-- `writing.scoring.request`: key = userId
-- `speaking.report.request`: key = sessionId
-- result topics: key = userId
-
----
-
-## 第四节：Writing Service 三 Agent 流水线
-
-### 流程
+### 2.3 Writing Service 三 Agent 流水线
 
 ```
-Kafka 消费 scoring.request
+Kafka 消费 writing.scoring.request
+        │
+        ├── DataServiceClient.getEmbedding(essayText)
+        │   └── 阿里云 DashScope text-embedding-v2 → 1536 维向量
         │
         ▼
-┌─ CompletableFuture.allOf() ─────────────┐
-│                                          │
-│  ┌──────────────┐    ┌──────────────┐   │
-│  │ LR_GRA Agent │    │ TR_CC Agent  │   │
-│  │              │    │  (含 RAG)    │   │
-│  └──────┬───────┘    └──────┬───────┘   │
-│         │                   │           │
-└─────────┼───────────────────┼───────────┘
-          │                   │
-          ▼                   ▼
-    ┌─────────────────────────────┐
-    │       Master Agent          │
-    │ (汇总 + Band Score + 润色)  │
-    └──────────────┬──────────────┘
-                   │
-                   ▼
-         写入 DB + 发布 result 到 Kafka
-         + Redis Pub/Sub 通知 gateway
+CompletableFuture.allOf() 并行执行
+  ├── LrGraAgent   → 词汇多样性 + 语法准确性 → JSON(lr_score, gra_score, 错误列表)
+  └── TrCcAgent    → 任务回应 + 连贯性 + RAG 范文注入 → JSON(tr_score, cc_score, 结构分析)
+        │
+        ▼
+MasterAgent → 交叉校验 + Band Score 计算 + 综合反馈
+        │
+        ▼
+写入 DB (status: COMPLETED) + Redis Pub/Sub 进度通知 + Kafka writing.scoring.result
 ```
 
-### Agent 职责
+**Agent 安全约束**：用户作文始终包裹在 `<essay_text></essay_text>` 标签内，System Prompt 声明标签内为不可信输入。Agent JSON 输出经 Jackson 反序列化 + 字段校验（分数范围 0-9，必填项），校验失败重试一次，二次失败标记 `FAILED`。
 
-**LR_GRA Agent：**
-- 输入：System Prompt + 用户作文（`<essay_text>` 标签包裹）
-- 职责：词汇多样性分析、语法准确性分析、错误标注与修正建议
-- 输出：JSON（lr_score、gra_score、错误列表、词汇统计）
+**进度推送节点**：
 
-**TR_CC Agent：**
-- 输入：System Prompt + 用户作文 + RAG 检索范文片段
-- 职责：任务回应完整度、论点展开逻辑、连贯性与衔接词使用
-- RAG 流程：作文 embedding → Qdrant 查询（filter: task_type + category，top_k=3）→ 范文注入 prompt
-- 输出：JSON（tr_score、cc_score、结构分析、改进建议）
+| 阶段 | 状态值 | Redis Pub/Sub channel |
+|------|--------|-----------------------|
+| 开始评分 | `SCORING_STARTED` | `scoring.progress:{submissionId}` |
+| 语法词汇完成 | `LR_GRA_DONE` | 同上 |
+| 逻辑连贯完成 | `TR_CC_DONE` | 同上 |
+| 汇总完成 | `COMPLETED` | 同上 |
+| 任意阶段异常 | `FAILED` | 同上 |
 
-**Master Agent：**
-- 输入：System Prompt + LR_GRA JSON + TR_CC JSON + 原文
-- 职责：交叉校验评分、计算官方 Band Score（四项平均，按雅思规则四舍五入到 0.5）、生成综合反馈、输出润色段落
-- 输出：JSON（overall_band、综合评语、润色段落）
+### 2.4 RAG 范文检索（已修复三个致命问题）
 
-### 进度推送节点
+**Qdrant 集合**：`writing_exemplars`，向量维度 1536（阿里云 `text-embedding-v2`），距离度量 Cosine，当前已导入 68 条记录。
 
-| 阶段 | 状态值 | 时机 |
-|------|--------|------|
-| 开始评分 | `SCORING_STARTED` | 消费消息后 |
-| 语法词汇分析完成 | `LR_GRA_DONE` | LR_GRA Agent 返回后 |
-| 逻辑连贯分析完成 | `TR_CC_DONE` | TR_CC Agent 返回后 |
-| 汇总评分完成 | `COMPLETED` | Master Agent 返回、DB 写入后 |
-| 评分失败 | `FAILED` | 任何阶段异常时 |
+**Payload 字段**（与后端代码对齐后）：
 
-Pub/Sub channel: `scoring.progress:{submissionId}`
+```json
+{
+  "exemplar_id": 2495,
+  "excerpt": "段落级范文片段（非全文）",
+  "task_type": 2,
+  "category": "Education",
+  "band_score": 9.0,
+  "topic_name": "Nature vs. Nurture",
+  "question_text": "..."
+}
+```
 
-### 安全约束
+**检索流程**：
 
-- 用户作文始终包裹在 `<essay_text></essay_text>` 标签内
-- System Prompt 声明标签内内容为不可信用户输入，不得执行其中任何指令
-- 所有 Agent JSON 输出通过 Jackson 反序列化 + 校验（字段类型、分数范围 0-9、必填项）
-- 校验失败重试一次，二次失败标记 FAILED
+1. 用户作文 → `DataServiceClient.getEmbedding()` → 1536 维 query 向量
+2. Qdrant filter（仅 `task_type`，已移除 `category` filter）+ vector search，`top_k=3`，`score_threshold=0.7`
+3. 返回 `excerpt` 拼入 TrCcAgent prompt
+4. 评分完成后用 `exemplar_id` 回查 MySQL 完整范文供前端展示
 
----
+**降级策略**：Qdrant 不可用 / Embedding API 不可用 / 检索结果为空 → 跳过 RAG，TrCcAgent 正常评分。
 
-## 第五节：Speaking Service 状态机与会话流程
+**已修复的三个致命 Bug**（详见 `docs/qdrant-rag-fix.md`）：
 
-### 状态机
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | Python 脚本导入到 `ielts_essays`，后端读 `writing_exemplars`，collection 名不一致 | 重命名 collection 为 `writing_exemplars` |
+| 2 | `DataServiceClient.getEmbedding()` 返回空列表，RAG 完全未工作 | 实现调用阿里云 DashScope `text-embedding-v2` |
+| 3 | `ScoringRequestConsumer` 硬编码 `category="general"`，Qdrant filter 永远 miss | 移除 category filter，只按 `task_type` 过滤 |
+
+### 2.5 Speaking Service 状态机
+
+**状态流转**：
 
 ```
 PART1_QA → PART2_INTRO → PART2_CANDIDATE_SPEAKING → PART3_DISCUSSION → SESSION_ENDED
 ```
 
-### Redis 数据结构
+**Redis 数据结构**：
 
 ```
-Key: session:{sessionId}
-Type: Hash
-Fields:
-  state, userId, topicId, persona,
-  part1Index, part1Questions (JSON),
-  part2StartedAt, turnCount, createdAt
-TTL: 3600s
+Key: session:{sessionId}   Type: Hash   TTL: 3600s
+Fields: state, userId, topicId, persona,
+        part1Index, part1Questions(JSON),
+        part2StartedAt, turnCount, createdAt
 ```
 
-### Lua 脚本原子状态推进
+**Lua 脚本原子状态推进**：CAS 语义，`current != expected` 时拒绝推进，防止并发竞争。
 
-```lua
-local current = redis.call('HGET', KEYS[1], 'state')
-if current ~= ARGV[1] then
-  return {0, current}
-end
-redis.call('HSET', KEYS[1], 'state', ARGV[2])
-for i = 3, #ARGV, 2 do
-  redis.call('HSET', KEYS[1], ARGV[i], ARGV[i+1])
-end
-redis.call('EXPIRE', KEYS[1], 3600)
-return {1, ARGV[2]}
-```
+**当前实现范围（MVP）**：
 
-### 各阶段流程
+- 仅实现 Part 1 完整流程（4 道硬编码问题，不从 data-service 拉取）
+- Part 1 问题用完后直接推进到 `SESSION_ENDED`，跳过 Part 2 / Part 3
+- 支持文本输入（`textInput`）和音频输入（`audioData`）两条路，ASR 接口已预留但实现为 stub
+- TTS 接口已预留，`audioUrl` 字段已在响应中返回
 
-**Part 1（4-6 题随机问答）：**
-- 会话创建时从题库缓存随机抽取 4-6 道题，存入 session hash
-- 每轮：录音上传 → ASR → LLM（含考官人设 + 对话历史）→ TTS → HTTP 返回音频 URL
-- 题目用完后 Lua 推进到 PART2_INTRO
-
-**Part 2（话题卡 + 独白）：**
-- PART2_INTRO：返回话题卡 + 考官引导语音频，记录 part2StartedAt
-- 前端 60 秒准备倒计时（纯前端）
-- PART2_CANDIDATE_SPEAKING：用户上传完整录音 → ASR 转文字
-- 懒推进：不主动计时，收到提交时检查时长
-- 完成后推进到 PART3_DISCUSSION
-
-**Part 3（深度讨论 + 动态追问）：**
-- 预设 3-4 道题（与 Part 2 话题相关）
-- LLM 判断回答深度：充分 → 下一题；浅薄 → 追问（最多 1 次）
-- 所有题目完成后推进到 SESSION_ENDED
-
-**会话结束：**
-- 对话历史写入 session_turns 表
-- 发送 speaking.report.request 到 Kafka
-- Redis session hash 等 TTL 自然过期
-
-### 上下文管理
-
-- 全量对话历史随每次请求传入 LLM
-- 预估 20-30 轮，2000-3000 token 历史，在 DeepSeek 上下文窗口内
-
----
-
-## 第六节：API Gateway 设计
-
-### 请求处理流程
+**每轮处理流程**：
 
 ```
-请求 → JWT 校验 → Guardrail（仅 UGC 请求）→ 路由转发 → 响应
+候选人输入（文本/音频）
+  → ASR（音频路径）
+  → isAbnormalContent() Guardrail
+  → 保存 CANDIDATE turn
+  → ExaminerService.generateResponse()（LLM + 考官人设 + 对话历史）
+  → TtsService.synthesize()
+  → 保存 EXAMINER turn
+  → stateMachine.incrementField(part1Index, turnCount)
+  → [若问题用完] transition → SESSION_ENDED → endSession() → Kafka speaking.report.request
 ```
 
-### JWT 方案
+### 2.6 Kafka 消息设计
 
-- data-service 签发，gateway 校验（共享密钥）
-- Token: {userId, email, exp, iat}
-- Access Token TTL: 2 小时
-- MVP 不实现 Refresh Token
+**Topic 列表**：
 
-### 路由规则
+| Topic | 生产者 | 消费者 | Partition | Key |
+|-------|--------|--------|-----------|-----|
+| `writing.scoring.request` | writing-service | writing-service | 3 | userId |
+| `writing.scoring.result` | writing-service | data-service | 3 | userId |
+| `speaking.report.request` | speaking-service | speaking-service | 3 | sessionId |
+| `speaking.session.result` | speaking-service | data-service | 3 | userId |
 
-- `/auth/**` → data-service:8083（免 JWT 白名单）
-- `/writing/**` → writing-service:8081
-- `/speaking/**` → speaking-service:8082
-- `/data/**` → data-service:8083（题库、用户信息、练习记录等）
-- 转发时注入 `X-User-Id` header（白名单路径除外）
+**消费失败处理**：重试 3 次（backoff 1s/3s/10s），三次失败后进入 DLT（`{topic}.DLT`），MVP 阶段仅日志告警。
 
-### Guardrail
-
-触发条件：仅对 UGC 请求（POST /writing/submit, POST /speaking/sessions/*/turns）
-
-Prompt:
-```
-你是一个意图分类器。判断以下用户输入是否与雅思考试相关。
-只输出 JSON: {"classification": "IELTS_RELATED"} 或 {"classification": "OFF_TOPIC"}
-
-用户输入:
-{userContent}
-```
-
-- 模型：deepseek-v4-flash
-- OFF_TOPIC → 400 + 提示信息
-- 分类失败（超时/异常）→ 放行
-
-### WebSocket 管理
-
-```
-前端 ──WebSocket──▶ gateway (/ws/scoring/{submissionId})
-                        │ 订阅 Redis Pub/Sub channel: scoring.progress:{submissionId}
-                        ▼
-                  推送进度给前端
-```
-
-- 连接建立时校验 JWT
-- 维护 submissionId → WebSocket session 映射
-- 评分完成或断开后清理订阅
-
-### 内部服务间鉴权
-
-- MVP：依赖 Docker 网络隔离，内部服务信任 X-User-Id header
-- gateway 覆盖/剥离外部请求的 X-User-Id
-
----
-
-## 第七节：RAG 范文检索设计
-
-### Qdrant 集合
-
-```
-Collection: writing_exemplars
-Vector size: 1024 (阿里云 text-embedding-v3)
-Distance: Cosine
-
-Payload:
-  exemplar_id: int (关联 MySQL writing_exemplars.id)
-  task_type: int (1/2)
-  category: string
-  band_score: float (7.0-9.0)
-  excerpt: string (范文原文，用于注入 prompt)
-  source: string
-```
-
-### 数据入库（离线脚本）
-
-- 手动整理 50-100 篇高分范文（Task 1 + Task 2 各半）
-- 脚本调用阿里云 embedding API 生成向量 → 写入 Qdrant
-- 独立工具，不集成到服务启动流程
-
-### 检索流程
-
-1. 用户作文 → 阿里云 embedding API → query 向量
-2. Qdrant 查询：filter(task_type + category) + vector search，top_k=3，score_threshold=0.7
-3. 返回范文 excerpt 注入 TR_CC Agent prompt
-4. 评分完成后：用 exemplar_id 从 MySQL 查完整范文 + examiner_comment，随评分结果返回前端展示
-
-### 降级策略
-
-- Qdrant 不可用 → 跳过 RAG，TR_CC Agent 正常评分
-- Embedding API 不可用 → 同上
-- 检索结果为空（score < 0.7）→ 不注入
-
----
-
-## 第八节：Redis 使用规划
-
-### Key 规划
+### 2.7 Redis Key 规划
 
 | 服务 | 用途 | Key 模式 | TTL |
 |------|------|----------|-----|
@@ -513,108 +223,100 @@ Payload:
 | writing-service | 题库缓存 | `writing:topic:{id}` | 30 min |
 | speaking-service | 题库缓存 | `speaking:topic:{id}` | 30 min |
 | speaking-service | 会话状态机 | `session:{sessionId}` | 1 hour |
-| writing-service | 进度 Pub/Sub | channel: `scoring.progress:{submissionId}` | N/A |
+| writing-service | 进度 Pub/Sub | `scoring.progress:{submissionId}` | N/A |
 
-### 部署
+缓存策略：统一 Cache-Aside。写入时 data-service 删 Redis key，调用方侧缓存依赖 TTL 自然过期。
 
-MVP 单 Redis 实例，key 前缀隔离各服务数据。
+### 2.8 数据库 Schema（实际落地版）
 
-### 缓存策略（统一 Cache-Aside）
+**与设计稿的差异**：所有 `TINYINT` 字段已改为 `INT`（`task_type`, `part`, `difficulty` 等），`writing_exemplars` 新增 `full_content TEXT NOT NULL` 字段用于前端展示完整范文，`examiner_comment` 改为可空（`NULL`）。
 
-读取：Redis 命中 → 返回；未命中 → REST 调 data-service → 写 Redis + TTL → 返回
+三个独立 MySQL database：`ielts_data`、`ielts_writing`、`ielts_speaking`，跨服务引用通过 ID 关联，不使用外键。
 
-写入（data-service）：写 MySQL → 删 Redis key。调用方侧缓存依赖 TTL 过期。
+### 2.9 API Gateway 实现细节
 
-### 序列化
+**实现栈**：Spring Boot 3.x Servlet 栈（非 WebFlux），`ProxyController` 使用 `RestClient`（同步阻塞）转发请求。
 
-- 缓存数据：JSON（Jackson）
-- 会话状态 Hash：原生 Redis Hash 字段
+**Header 处理**：转发时复制所有 header，跳过 `Host` 和 `Content-Length`；`X-User-Id` 由 `JwtAuthFilter` 的 `UserIdHeaderWrapper` 注入，外部请求无法伪造（filter 在 proxy 之前执行）。
 
----
-
-## 第九节：Docker Compose 基础设施
-
-### 容器清单
-
-```yaml
-# 基础设施
-mysql:           # 3306, volume 持久化
-redis:           # 6379, volume 持久化
-kafka:           # 9092, KRaft 模式（无 Zookeeper）
-qdrant:          # 6333/6334, volume 持久化
-
-# 业务服务
-api-gateway:     # 8080（唯一对外）
-data-service:    # 8083（内部）
-writing-service: # 8081（内部）
-speaking-service:# 8082（内部）
-```
-
-### 网络隔离
-
-```yaml
-networks:
-  frontend:  # api-gateway 对外
-  backend:   # 所有服务 + 基础设施
-```
-
-仅 api-gateway 连接两个网络，其余仅 backend。
-
-### 数据库初始化
-
-- MySQL 单实例，三个 database：ielts_data、ielts_writing、ielts_speaking
-- 初始化 SQL 挂载到 /docker-entrypoint-initdb.d/
-
-### 启动顺序
-
-```
-mysql + redis + kafka + qdrant (healthy)
-    → data-service + writing-service + speaking-service
-        → api-gateway
-```
-
-depends_on + healthcheck 保证顺序。
-
-### 环境变量
-
-- `.env` 文件存配置（DB 密码、API key）
-- `.env` 加入 .gitignore，提供 .env.example 模板
+**CORS**：`application.yml` 中配置允许 `localhost:5173` 和 `localhost:5174`（Vite 开发服务器），`OPTIONS` 预检请求在 `JwtAuthFilter` 中无条件放行。
 
 ---
 
-## 第十节：测试策略
+## 第三节：已知局限与技术债
 
-### 测试分层
+### 3.1 高优先级（影响功能完整性）
 
-| 层级 | 工具 | 覆盖范围 |
-|------|------|----------|
-| 单元测试 | JUnit 5 + Mockito | Service 层逻辑、JSON 解析、状态机转换 |
-| 集成测试 | Testcontainers | DB CRUD、Kafka 生产消费、Redis + Lua |
-| API 测试 | MockMvc / WebTestClient | Controller 请求响应、JWT、路由 |
+**Speaking Service 仅实现 Part 1**
+- 当前：4 道硬编码问题，Part 1 结束即 `SESSION_ENDED`
+- 缺失：Part 2（话题卡 + 独白计时）、Part 3（动态追问逻辑）
+- 缺失：从 data-service 动态拉取题目（`startSession` 中 `questions` 为硬编码列表）
 
-### Mock 边界
+**ASR / TTS 为 Stub**
+- `AsrService` 和 `TtsService` 接口已定义，实现为占位符（返回空字符串或固定 URL）
+- 音频输入路径（`audioData`）实际未经过真实 ASR，`textInput` 是当前唯一可用输入方式
 
-| 被 Mock | 原因 |
-|---------|------|
-| DeepSeek API | 外部不稳定、成本高 |
-| 阿里云 Embedding/ASR/TTS | 同上 |
-| Qdrant | 简单场景 Mock，复杂场景 Testcontainers |
+**RAG Category 过滤已移除**
+- 当前仅按 `task_type` 过滤，语义相关性依赖 cosine 相似度
+- 数据量（68 条）不足以支撑 category 细分过滤
+- 恢复条件：数据量 ≥ 数百条 + `ScoringRequestMessage` 携带 `category` 字段
 
-不 Mock：MySQL、Kafka、Redis — 用 Testcontainers 真实验证。
+### 3.2 中优先级（架构妥协）
 
-### 关键测试用例
+**Gateway 同步阻塞代理**
+- `ProxyController` 使用 `RestClient`（同步），gateway 线程在等待下游响应期间被阻塞
+- 高并发场景下 Tomcat 线程池会成为瓶颈
+- 迭代方向：迁移到 Spring Cloud Gateway（WebFlux 响应式）或 Virtual Threads（Java 21）
 
-**Writing Service:**
-- 三 Agent 流水线正常完成 → JSON 解析、分数计算、DB 写入
-- Agent 返回非法 JSON → 重试后标记 FAILED
-- Kafka 消费失败 → 重试 3 次进入 DLT
+**Embedding API 同步调用**
+- `DataServiceClient.getEmbedding()` 使用 `WebClient.block()`，在 Kafka 消费线程中同步等待阿里云 API 响应
+- 阿里云 API 延迟直接影响评分吞吐量
+- 迭代方向：改为异步，或在 Kafka 消费前预计算 embedding
 
-**Speaking Service:**
-- 状态机正常流转 Part1 → Part2 → Part3 → ENDED
-- 并发状态推进 → Lua 脚本只允许一个成功
-- 会话 TTL 过期 → 僵尸会话清理
+**缓存失效策略不一致**
+- data-service 写入时删 Redis key（主动失效）
+- 调用方侧（writing/speaking-service）缓存依赖 TTL 过期（被动失效）
+- 题库数据更新后，调用方侧最多有 30 分钟的脏读窗口
 
-**API Gateway:**
-- 有效 JWT → 正常转发
-- 无效/过期 JWT → 401
-- Guardrail OFF_TOPIC → 400
+**单 Redis 实例**
+- Cache-Aside、Pub/Sub、状态机 Hash 共用同一 Redis 实例
+- 无 Sentinel / Cluster，单点故障会同时影响缓存、评分进度推送和口语会话状态
+
+### 3.3 低优先级（MVP 已知简化）
+
+**无 Refresh Token**
+- Access Token TTL 2 小时，过期后需重新登录
+- 迭代方向：实现 Refresh Token + Token 轮换
+
+**内部服务无鉴权**
+- 依赖 Docker 网络隔离，内部服务信任 `X-User-Id` header
+- 迭代方向：内部服务间 mTLS 或 Service Account Token
+
+**DLT 仅日志告警**
+- Kafka DLT 消息无自动重处理机制，需人工介入
+- 迭代方向：DLT 消费者 + 告警 + 可重放机制
+
+**Qdrant 数据入库为手动脚本**
+- `qdrant/read_qdrant_data.py` 需手动执行，不集成到服务启动流程
+- API Key 硬编码在脚本中（`sk-29d9a46a...`），存在安全风险，需迁移到环境变量
+
+**输入校验不完整**
+- `speaking_topics` 的 `part` 参数传入不存在的值（如 `part=5`）会成功返回空列表而非 400
+- `writing_topics` 的 `task_type=3` 同样会成功返回空列表
+- 迭代方向：Controller 层加枚举校验，返回明确的 400 错误
+
+---
+
+## 附录：环境变量清单
+
+| 变量 | 服务 | 说明 |
+|------|------|------|
+| `JWT_SECRET` | gateway, data-service | 共享密钥，≥32 字节 |
+| `DEEPSEEK_API_KEY` | gateway, writing-service, speaking-service | DeepSeek API Key |
+| `DEEPSEEK_BASE_URL` | gateway | 默认 `https://api.deepseek.com` |
+| `DASHSCOPE_API_KEY` | writing-service | 阿里云 DashScope，用于 Embedding |
+| `DATA_SERVICE_URL` | gateway, writing-service, speaking-service | 默认 `http://localhost:8083` |
+| `WRITING_SERVICE_URL` | gateway | 默认 `http://localhost:8081` |
+| `SPEAKING_SERVICE_URL` | gateway | 默认 `http://localhost:8082` |
+| `REDIS_HOST` / `REDIS_PORT` | 所有服务 | 默认 `localhost:6379` |
+| `QDRANT_HOST` / `QDRANT_PORT` | writing-service | 默认 `localhost:6333` |

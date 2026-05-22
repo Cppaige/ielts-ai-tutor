@@ -17,7 +17,11 @@ import java.util.*;
 @Order(1)
 public class JwtAuthFilter extends OncePerRequestFilter {
 
-    private static final Set<String> WHITELIST = Set.of("/auth/login", "/auth/register");
+    // 1. 修改点：加上 /api 前缀，兼容网关的真实路由
+    private static final Set<String> WHITELIST = Set.of(
+            "/auth/login", "/auth/register",
+            "/api/auth/login", "/api/auth/register"
+    );
 
     private final JwtValidator jwtValidator;
 
@@ -28,6 +32,12 @@ public class JwtAuthFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
+
+        // 2. 核心大招：无条件放行所有的 OPTIONS 预检请求！
+        if ("OPTIONS".equalsIgnoreCase(request.getMethod())) {
+            chain.doFilter(request, response);
+            return;
+        }
 
         String path = request.getRequestURI();
         if (WHITELIST.stream().anyMatch(path::startsWith)) {
@@ -59,6 +69,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         response.getWriter().write("{\"code\":401,\"message\":\"Unauthorized\"}");
     }
 
+    // ... UserIdHeaderWrapper 内部类保持不变 ...
     private static class UserIdHeaderWrapper extends HttpServletRequestWrapper {
         private final Long userId;
 

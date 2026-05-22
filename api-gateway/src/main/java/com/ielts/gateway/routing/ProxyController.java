@@ -23,26 +23,27 @@ public class ProxyController {
         this.routing = routing;
     }
 
-    @RequestMapping({"/auth/**", "/data/**"})
+    @RequestMapping({"/auth/**", "/data/**", "/api/auth/**", "/api/data/**"})
     public ResponseEntity<String> proxyToDataService(HttpServletRequest request,
                                                      @RequestBody(required = false) String body) {
         return proxy(routing.getDataService(), request, body);
     }
 
-    @RequestMapping("/writing/**")
+    @RequestMapping({"/writing/**", "/api/writing/**"})
     public ResponseEntity<String> proxyToWritingService(HttpServletRequest request,
                                                         @RequestBody(required = false) String body) {
         return proxy(routing.getWritingService(), request, body);
     }
 
-    @RequestMapping("/speaking/**")
+    @RequestMapping({"/speaking/**", "/api/speaking/**"})
     public ResponseEntity<String> proxyToSpeakingService(HttpServletRequest request,
                                                          @RequestBody(required = false) String body) {
         return proxy(routing.getSpeakingService(), request, body);
     }
 
     private ResponseEntity<String> proxy(String baseUrl, HttpServletRequest request, String body) {
-        String path = request.getRequestURI();
+        // 去掉 /api 前缀再转发，保持下游服务路径不变
+        String path = request.getRequestURI().replaceFirst("^/api", "");
         String query = request.getQueryString();
         String targetUrl = baseUrl + path + (query != null ? "?" + query : "");
 

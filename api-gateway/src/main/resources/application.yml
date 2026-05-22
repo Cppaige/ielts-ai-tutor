@@ -19,6 +19,33 @@ spring:
       chat:
         options:
           model: deepseek-v4-flash
+  cloud:
+    gateway:
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowedOrigins:
+              - "http://localhost:5173"
+              - "http://127.0.0.1:5173"
+              - "http://localhost:5174"
+              - "http://127.0.0.1:5174"
+            allowedMethods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+              - OPTIONS
+            allowedHeaders: "*"
+            allowCredentials: true
+      # ▼▼▼ 重点加上这段路由配置 ▼▼▼
+      routes:
+        - id: data-service-auth
+          uri: ${DATA_SERVICE_URL:http://localhost:8083}
+          predicates:
+            - Path=/api/auth/**
+          filters:
+            # 去掉 /api 前缀，真实请求变成 http://localhost:8083/auth/register
+            - RewritePath=/api/(?<segment>.*), /$\{segment}
 
 jwt:
   secret: ${JWT_SECRET:changeme-secret-key-that-is-at-least-32-bytes}

@@ -36,7 +36,7 @@ public class SpeakingController {
     @PostMapping("/sessions/{sessionId}/turns")
     public ApiResponse<TurnResponse> processTurn(@PathVariable Long sessionId,
                                                   @RequestBody TurnRequest request) {
-        TurnResponse response = sessionService.processTurn(sessionId, request.audioData(), request.transcriptOverride());
+        TurnResponse response = sessionService.processTurn(sessionId, request.audioData(), request.textInput());
         return ApiResponse.success(response);
     }
 }

@@ -19,7 +19,7 @@ import java.util.stream.Collectors;
 @Order(2)
 public class GuardrailFilter extends OncePerRequestFilter {
 
-    private static final Set<String> UGC_PATHS = Set.of("/writing/submit", "/speaking/sessions");
+    private static final Set<String> UGC_PATHS = Set.of("/writing/submit", "/api/writing/submit");
     private static final String CLASSIFICATION_PROMPT = """
             你是一个意图分类器。判断以下用户输入是否与雅思考试相关。
             只输出 JSON: {"classification": "IELTS_RELATED"} 或 {"classification": "OFF_TOPIC"}

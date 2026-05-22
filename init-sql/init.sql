@@ -51,7 +51,6 @@ CREATE TABLE practice_records (
 
 -- ielts_writing tables
 USE ielts_writing;
-DROP TABLE writing_exemplars;
 CREATE TABLE writing_exemplars (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     task_type INT NOT NULL,
